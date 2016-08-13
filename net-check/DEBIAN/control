@@ -1,0 +1,14 @@
+Package: net-check
+Version: 0.1-1
+Architecture: all
+Section: net
+Maintainer: Raido Pahtma <raido.pahtma@ttu.ee>
+Homepage: https://github.com/proactivity-lab/net-check
+Depends: bash
+Priority: optional
+Description: Network connectivity checking and recovery script
+ This script periodically checks network connectivity and
+ tries to repair the connection if it fails.
+ .
+ Change the interface and target in /etc/net-check.conf
+Installed-Size: 3

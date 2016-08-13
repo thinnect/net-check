@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+# net-check script
+# Ping a destination, if it is unreachable, wait a bit, ping it again and if still
+# not successful, do ifdown and ifup.
+# Initial idea from:http://technotes.nofailkale.com/2014/03/how-to-fix-raspberry-pi-wi-fi.html
+
+# Load configuration file
+source /etc/net-check.conf
+
+# Default to eth0 if nothing else is specified
+if [ -z "$INTERFACE" ]; then
+	INTERFACE="eth0"
+fi
+
+# Ping www.google.com if nothing else is specified
+if [ -z "$GATEWAY" ]; then
+	GATEWAY="www.google.com"
+fi
+
+SCRIPT_NAME=`basename $0`
+LOGGER="/usr/bin/logger"
+PING="/bin/ping"
+
+function is_gateway_reachable
+{
+  $PING -w 1 -c 1 -I $INTERFACE $GATEWAY &>/dev/null
+  return $?
+}
+
+if ! is_gateway_reachable
+then
+  sleep 20
+  if ! is_gateway_reachable
+  then
+    $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "Could not reach $GATEWAY. Restarting interface $INTERFACE."
+    /sbin/ifdown --force $INTERFACE
+    $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "ifdown of $INTERFACE returned: $?"
+    sleep 5
+    /sbin/ifup --force $INTERFACE
+    $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "ifup of $INTERFACE returned: $?"
+  fi
+else
+  $LOGGER -s -p cron.info -t $SCRIPT_NAME -i "Network interface $INTERFACE operational."
+fi
