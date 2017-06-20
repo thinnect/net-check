@@ -5,41 +5,251 @@
 # not successful, do ifdown and ifup.
 # Initial idea from:http://technotes.nofailkale.com/2014/03/how-to-fix-raspberry-pi-wi-fi.html
 
+#######################################################################
+#                            Configuration                            #
+#######################################################################
+
 # Load configuration file
 source /etc/net-check.conf
-
-# Default to eth0 if nothing else is specified
-if [ -z "$INTERFACE" ]; then
-	INTERFACE="eth0"
-fi
-
-# Ping www.google.com if nothing else is specified
-if [ -z "$GATEWAY" ]; then
-	GATEWAY="www.google.com"
-fi
 
 SCRIPT_NAME=`basename $0`
 LOGGER="/usr/bin/logger"
 PING="/bin/ping"
+BIN_IP="/sbin/ip"
+
+
+#######################################################################
+#                              Functions                              #
+#######################################################################
+
+function log_error()
+{
+  LOG_MSG="$1"
+  $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "$LOG_MSG"
+}
+
+function log_info()
+{
+  LOG_MSG="$1"
+  $LOGGER -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
+}
+
+# Get a list of default interfaces on the system (often there are only 1)
+function list_default_interfaces()
+{
+  IFLIST=$($BIN_IP -family inet route show to default | sed -r 's/.*[[:space:]]+dev[[:space:]]+([^[:space:]]*)[[:space:]]+.*/\1/')
+  RESULT=$?
+  if ((RESULT==0)); then
+    echo $IFLIST
+  fi
+  return $RESULT
+}
+
+# Write a number to a file
+#  @param $1 [required] Name of the file which stores the number
+#  @param $2 [required] Number to write
+#  @return 0 if succeeded, negative error code otherwise
+function number_set()
+{
+  STORAGE="$1"
+  POS_NUM="$2"
+  if [[ -z $STORAGE || -z $POS_NUM ]]; then
+    log_error "Write failed: missing storage location [$STORAGE] or number [$POS_NUM]"
+    return -1
+  fi
+
+  if [[ ! $POS_NUM =~ '^-?[0-9]+$' ]]; then
+    log_error "Write failed: cannot write non-numeric [$POS_NUM] to [$STORAGE]"
+    return -4
+  fi
+
+  if [[ ! -f "$STORAGE" ]]; then
+    if ! touch "$STORAGE"; then
+      log_error "Write failed: cannot create file [$STORAGE]"
+      return -2
+    fi
+  fi
+
+  if ! echo "$POS_NUM" > "$STORAGE"; then
+    log_error "Write failed: [$POS_NUM] to [$STORAGE]"
+    return -3
+  else
+    log_info "Wrote [$POS_NUM] to [$STORAGE]"
+    echo $POS_NUM
+    return 0
+  fi
+}
+
+# Read a 0 or positive number from a file and echo to stdout
+#  @param $1 [required] Name of the file which stores the number
+#  @return 0 if succeeded, negative error code otherwise
+function number_get()
+{
+  STORAGE="$1"
+  if [[ -z "$STORAGE" ]]; then
+    log_error "Read failed, missing file [$STORAGE]"
+    return -1
+  fi
+
+  if [[ ! -r $STORAGE ]]; then
+    log_error "Read failed, file [$STORAGE] not readable"
+    return -2
+  fi
+
+  if ! POS_NUM=$(cat "$STORAGE"); then
+    log_error "Read failed: [$POS_NUM] from [$STORAGE]"
+    return -3
+  elif [[ ! $POS_NUM =~ '-?^[0-9]+$' ]]; then
+    log_error "Read failed, non-numeric [$POS_NUM] from [$STORAGE]"
+    return -4
+  else
+    log_info "Read [$POS_NUM] from [$STORAGE]"
+    echo $POS_NUM
+    return 0
+  fi
+}
+
+# Read fail count
+function get_fail_count()
+{
+
+  FAIL_COUNT=$(number_get "$FAILLOG")
+  if (($? != 0)); then
+    log_error "Failed to read fail count [$FAIL_COUNT], error [$?]"
+    # Report success to avoid restarting network unnecessarily
+    echo 0
+    return -1
+  else
+    echo $FAIL_COUNT
+    return 0
+  fi
+}
+
+# Increment fail count
+# @param $1 [required] Increment amount
+function fail_count_inc()
+{
+  INCREMENT=$1
+  if [[ -z "$INCREMENT" ]]; then
+    log_error "Increment failed, missing amount [$INCREMENT]"
+    return -1
+  fi
+  # Read current
+  FAIL_COUNT=$(number_get "$FAILLOG")
+  RESULT=$?
+  if (($RESULT != 0)); then
+    log_error "Failed to increment fail count [$FAIL_COUNT], read error [$RESULT]"
+    # Report success to avoid restarting network unnecessarily
+    echo 0
+    return -2
+  else
+    # Increment
+    ((FAIL_COUNT = FAIL_COUNT + 1))
+    NEW_FAIL_COUNT=$(number_set "$FAILLOG" "$FAIL_COUNT")
+    RESULT=$?
+    if (($RESULT != 0)); then
+      log_error "Failed to increment fail count [$FAIL_COUNT]/[$NEW_FAIL_COUNT], write error [$RESULT]"
+      echo 0
+      return -3
+    else
+      echo $FAIL_COUNT
+      return 0
+    fi
+  fi
+
+}
+
+# Reset fail count to 0
+function fail_count_reset()
+{
+  NEW_FAIL_COUNT=$(number_set "$FAILLOG" 0)
+  RESULT=$?
+  if (($RESULT != 0)); then
+    log_error "Failed to reset fail count [$NEW_FAIL_COUNT], write error [$RESULT]"
+    echo 0
+    return -2
+  else
+    echo 0
+    return 0
+  fi
+}
+
+# Check if Internet is available through the system default route
+# and record the failure count in failure log
+function test_link()
+{
+  if ! is_gateway_reachable "$GATEWAY"; then
+    fail_count_inc 1
+  else
+    fail_count_reset
+  fi
+}
 
 function is_gateway_reachable
 {
-  $PING -w 1 -c 1 -I $INTERFACE $GATEWAY &>/dev/null
+  PING_TARGET="$1"
+  PING_INTERFACE="$2"
+  PING_TIMEOUT=5
+  PING_COUNT=3
+  PING_INTERVAL=1
+
+  if [ -z "$PING_TARGET" ]; then
+    log_error "Missing a ping target"
+    exit -1
+  fi
+
+  if [ -n "$PING_INTERFACE" ]; then
+    #$PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL -I "$PING_INTERFACE" "$PING_TARGET" &>/dev/null
+    $PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL -I "$PING_INTERFACE" "$PING_TARGET"
+  else
+    #$PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL "$PING_TARGET" &>/dev/null
+    $PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL "$PING_TARGET"
+  fi
   return $?
 }
 
-if ! is_gateway_reachable
-then
-  sleep 20
-  if ! is_gateway_reachable
-  then
-    $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "Could not reach $GATEWAY. Restarting interface $INTERFACE."
-    /sbin/ifdown --force $INTERFACE
-    $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "ifdown of $INTERFACE returned: $?"
+function restart_interface
+{
+  TARGET_IF="$1"
+  if [[ -z $TARGET_IF ]]; then
+    log_error "Cannot restart interface, missing $TARGET_IF"
+    return -1
+  else
+    log_info "Restarting interface $TARGET_IF"
+    /sbin/ifdown --force $TARGET_IF
+    log_error "ifdown of $TARGET_IF returned: $?"
     sleep 5
-    /sbin/ifup --force $INTERFACE
-    $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "ifup of $INTERFACE returned: $?"
+    /sbin/ifup --force $TARGET_IF
+    log_error "ifup of $TARGET_IF returned: $?"
+  fi
+}
+
+# Default to eth0 if nothing else is specified
+if [ -z "$INTERFACES" ]; then
+  INTERFACES=$(list_default_interfaces)
+fi
+
+# Ping www.google.com if nothing else is specified
+if [ -z "$GATEWAY" ]; then
+  GATEWAY="www.google.com"
+fi
+
+# Store failure count in default location
+if [ -z "$FAILLOG" ]; then
+  FAILLOG="/var/tmp/net-check-faillog.txt"
+fi
+
+if ! is_gateway_reachable "$GATEWAY"; then
+  log_info "Could not reach $GATEWAY, retrying"
+  sleep 1
+  log_info "retrying $GATEWAY"
+  if ! is_gateway_reachable "$GATEWAY"; then
+    log_error "Could not reach $GATEWAY. Restarting interfaces $INTERFACES"
+    # Iterate all default interfaces, restart them
+    for INTF in $INTERFACES; do
+      restart_interface "$INTF"
+    done
   fi
 else
-  $LOGGER -s -p cron.info -t $SCRIPT_NAME -i "Network interface $INTERFACE operational."
+  log_info "Network interface $INTERFACES operational."
 fi
