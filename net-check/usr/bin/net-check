@@ -52,7 +52,7 @@ function log_info()
   $LOGGER -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
 }
 
-# Get a list of default interfaces on the system (often there are only 1)
+# Get a list of default IPv4 interfaces on the system (often there are only 1)
 function list_default_interfaces()
 {
   IFLIST=$($BIN_IP -family inet route show to default | sed -r 's/.*[[:space:]]+dev[[:space:]]+([^[:space:]]*)[[:space:]]+.*/\1/')
@@ -241,7 +241,7 @@ function restart_interface
   fi
 }
 
-# Default to eth0 if nothing else is specified
+# Default to querying the current default interfaces from routing table
 if [ -z "$INTERFACES" ]; then
   INTERFACES=$(list_default_interfaces)
 fi
