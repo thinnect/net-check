@@ -7,8 +7,8 @@
 # is tried a few times with quick retry, sending a few packets.
 # If all pings fail, we will increment the ping failure counter and wait
 # to be run again. When the failure counter exceeds a configured value,
-# we do ifdown and ifup to all interfaces with a default route (usually
-# ppp0 or eth0).
+# we do ifdown and ifup to all requested interfaces. If no interfaces are
+# configured, restart those used by default routes (usually just ppp0 or eth0).
 # If the ping succeeds, we reset the failure counter to 0.
 #
 # The idea behind retrying slowly and carefully is permitting the network
@@ -26,14 +26,17 @@
 source /etc/net-check.conf
 
 SCRIPT_NAME=`basename $0`
-LOGGER="/usr/bin/logger"
-PING="/bin/ping"
+BIN_LOGGER="/usr/bin/logger"
+BIN_PING="/bin/ping"
 BIN_IP="/sbin/ip"
 # If ping fails _more_ times than the set limit, we restart the network.
-# I.e. if set to 5, the 6th failure will trigger a network restart.
-FAILURE_LIMIT=2
+# When set to 5, the 6th consecutive failure will trigger a network restart.
+FAILURE_LIMIT=5
 # Delay between quick ping retry attempts
-RETRY_DELAY_S=1
+RETRY_DELAY_S=10
+# Delay between issuing stop and start of an interface.
+# Must be long enough to accommodate 3G shutdown (15+ s)
+IF_RESTART_DELAY_S=20
 
 
 #######################################################################
@@ -43,16 +46,16 @@ RETRY_DELAY_S=1
 function log_error()
 {
   LOG_MSG="$1"
-  $LOGGER -s -p cron.error -t $SCRIPT_NAME -i "$LOG_MSG"
+  $BIN_LOGGER -s -p cron.error -t $SCRIPT_NAME -i "$LOG_MSG"
 }
 
 function log_info()
 {
   LOG_MSG="$1"
-  $LOGGER -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
+  $BIN_LOGGER -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
 }
 
-# Get a list of default IPv4 interfaces on the system (often there are only 1)
+# Discover a list of default IPv4 interfaces on the system (often there are only 1)
 function list_default_interfaces()
 {
   IFLIST=$($BIN_IP -family inet route show to default | sed -r 's/.*[[:space:]]+dev[[:space:]]+([^[:space:]]*)[[:space:]]+.*/\1/')
@@ -206,7 +209,7 @@ function is_gateway_reachable
 {
   PING_TARGET="$1"
   PING_INTERFACE="$2"
-  PING_TIMEOUT=2
+  PING_TIMEOUT=5
   PING_COUNT=3
   PING_INTERVAL=1
 
@@ -216,13 +219,13 @@ function is_gateway_reachable
   fi
 
   if [ -n "$PING_INTERFACE" ]; then
-    #$PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL -I "$PING_INTERFACE" "$PING_TARGET" &>/dev/null
-    $PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL -I "$PING_INTERFACE" "$PING_TARGET"
+    PING_OUTPUT=$($BIN_PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL -I "$PING_INTERFACE" "$PING_TARGET" 2>&1)
   else
-    #$PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL "$PING_TARGET" &>/dev/null
-    $PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL "$PING_TARGET"
+    PING_OUTPUT=$($BIN_PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL "$PING_TARGET" 2>&1)
   fi
-  return $?
+  PING_RESULT=$?
+  log_info "Ping result $PING_RESULT: [$PING_OUTPUT]"
+  return $PING_RESULT
 }
 
 function restart_interface
@@ -235,7 +238,7 @@ function restart_interface
     log_info "Restarting interface $TARGET_IF"
     IFDOWN_RESULT=$(/sbin/ifdown --force $TARGET_IF 2>&1)
     log_error "ifdown of $TARGET_IF returned: $? [$IFDOWN_RESULT]"
-    sleep 5
+    sleep $IF_RESTART_DELAY_S
     IFUP_RESULT=$(/sbin/ifup --force $TARGET_IF 2>&1)
     log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]"
   fi
@@ -257,7 +260,7 @@ if [ -z "$FAILLOG" ]; then
 fi
 
 if ! is_gateway_reachable "$GATEWAY"; then
-  log_info "Could not reach $GATEWAY, sleeping and retrying"
+  log_info "Could not reach $GATEWAY, sleeping $RETRY_DELAY_S s and retrying"
   sleep $RETRY_DELAY_S
   log_info "Retrying $GATEWAY"
   if ! is_gateway_reachable "$GATEWAY"; then
@@ -274,7 +277,7 @@ if ! is_gateway_reachable "$GATEWAY"; then
       # Reset failure counter regardless of result of network restart
       fail_count_reset
     else
-      log_error "Failure count $FAIL_COUNT doesn't exceed limit $FAILURE_LIMIT (increment result $INC_RESULT), waiting"
+      log_error "Failure count $FAIL_COUNT doesn't exceed limit $FAILURE_LIMIT, incrementing ($INC_RESULT) and waiting"
     fi
   else
     log_info "Network interfaces [$INTERFACES] operational."
