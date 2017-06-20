@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 
 # net-check script
-# Ping a destination, if it is unreachable, wait a bit, ping it again and if still
-# not successful, do ifdown and ifup.
+#
+# This script is run periodically by cron (e.g. every 5 minutes). When
+# run, we test the connection to Internet by pinging a solid host. Ping
+# is tried a few times with quick retry, sending a few packets.
+# If all pings fail, we will increment the ping failure counter and wait
+# to be run again. When the failure counter exceeds a configured value,
+# we do ifdown and ifup to all interfaces with a default route (usually
+# ppp0 or eth0).
+# If the ping succeeds, we reset the failure counter to 0.
+#
+# The idea behind retrying slowly and carefully is permitting the network
+# to self-heal before we take drastic measures, potentially tipping over an
+# already unstable system (e.g. when GSM signal is weak or something is
+# overloaded).
+#
 # Initial idea from:http://technotes.nofailkale.com/2014/03/how-to-fix-raspberry-pi-wi-fi.html
 
 #######################################################################
@@ -16,6 +29,11 @@ SCRIPT_NAME=`basename $0`
 LOGGER="/usr/bin/logger"
 PING="/bin/ping"
 BIN_IP="/sbin/ip"
+# If ping fails _more_ times than the set limit, we restart the network.
+# I.e. if set to 5, the 6th failure will trigger a network restart.
+FAILURE_LIMIT=2
+# Delay between quick ping retry attempts
+RETRY_DELAY_S=1
 
 
 #######################################################################
@@ -48,63 +66,64 @@ function list_default_interfaces()
 # Write a number to a file
 #  @param $1 [required] Name of the file which stores the number
 #  @param $2 [required] Number to write
-#  @return 0 if succeeded, negative error code otherwise
+#  @return 0 if succeeded, error code otherwise
 function number_set()
 {
   STORAGE="$1"
-  POS_NUM="$2"
-  if [[ -z $STORAGE || -z $POS_NUM ]]; then
-    log_error "Write failed: missing storage location [$STORAGE] or number [$POS_NUM]"
-    return -1
+  NUMBER="$2"
+  if [[ -z $STORAGE || -z $NUMBER ]]; then
+    log_error "Write failed: missing storage location [$STORAGE] or number [$NUMBER]"
+    return 1
   fi
 
-  if [[ ! $POS_NUM =~ '^-?[0-9]+$' ]]; then
-    log_error "Write failed: cannot write non-numeric [$POS_NUM] to [$STORAGE]"
-    return -4
+  if [[ ! $NUMBER =~ ^-?[0-9]+$ ]]; then
+    log_error "Write failed: cannot write non-numeric [$NUMBER] to [$STORAGE]"
+    return 4
   fi
 
   if [[ ! -f "$STORAGE" ]]; then
     if ! touch "$STORAGE"; then
       log_error "Write failed: cannot create file [$STORAGE]"
-      return -2
+      return 2
     fi
   fi
 
-  if ! echo "$POS_NUM" > "$STORAGE"; then
-    log_error "Write failed: [$POS_NUM] to [$STORAGE]"
-    return -3
+  if ! echo "$NUMBER" > "$STORAGE"; then
+    log_error "Write failed: [$NUMBER] to [$STORAGE]"
+    return 3
   else
-    log_info "Wrote [$POS_NUM] to [$STORAGE]"
-    echo $POS_NUM
+    log_info "Wrote [$NUMBER] to [$STORAGE]"
+    echo $NUMBER
     return 0
   fi
 }
 
 # Read a 0 or positive number from a file and echo to stdout
 #  @param $1 [required] Name of the file which stores the number
-#  @return 0 if succeeded, negative error code otherwise
+#  @return 0 if succeeded, error code otherwise
 function number_get()
 {
   STORAGE="$1"
+  NUMBER=""
   if [[ -z "$STORAGE" ]]; then
     log_error "Read failed, missing file [$STORAGE]"
-    return -1
+    return 1
   fi
 
   if [[ ! -r $STORAGE ]]; then
-    log_error "Read failed, file [$STORAGE] not readable"
-    return -2
+    log_error "Read failed, file [$STORAGE] missing or not readable"
+    return 2
   fi
 
-  if ! POS_NUM=$(cat "$STORAGE"); then
-    log_error "Read failed: [$POS_NUM] from [$STORAGE]"
-    return -3
-  elif [[ ! $POS_NUM =~ '-?^[0-9]+$' ]]; then
-    log_error "Read failed, non-numeric [$POS_NUM] from [$STORAGE]"
-    return -4
+  if ! NUMBER=$(cat "$STORAGE"); then
+    log_error "Read failed: [$NUMBER] from [$STORAGE]"
+    return 3
+  elif [[ ! $NUMBER =~ -?^[0-9]+$ ]]; then
+    log_error "Read failed, non-numeric [$NUMBER] from [$STORAGE]"
+    return 4
   else
-    log_info "Read [$POS_NUM] from [$STORAGE]"
-    echo $POS_NUM
+    log_info "Read [$NUMBER] from [$STORAGE]"
+    echo $NUMBER
     return 0
   fi
 }
@@ -118,7 +137,7 @@ function get_fail_count()
     log_error "Failed to read fail count [$FAIL_COUNT], error [$?]"
     # Report success to avoid restarting network unnecessarily
     echo 0
-    return -1
+    return 1
   else
     echo $FAIL_COUNT
     return 0
@@ -132,31 +151,30 @@ function fail_count_inc()
   INCREMENT=$1
   if [[ -z "$INCREMENT" ]]; then
     log_error "Increment failed, missing amount [$INCREMENT]"
-    return -1
+    return 1
   fi
   # Read current
   FAIL_COUNT=$(number_get "$FAILLOG")
   RESULT=$?
-  if (($RESULT != 0)); then
-    log_error "Failed to increment fail count [$FAIL_COUNT], read error [$RESULT]"
-    # Report success to avoid restarting network unnecessarily
-    echo 0
-    return -2
-  else
-    # Increment
+  if ((RESULT == 0)); then
+    # Increment fail counter
     ((FAIL_COUNT = FAIL_COUNT + 1))
-    NEW_FAIL_COUNT=$(number_set "$FAILLOG" "$FAIL_COUNT")
-    RESULT=$?
-    if (($RESULT != 0)); then
-      log_error "Failed to increment fail count [$FAIL_COUNT]/[$NEW_FAIL_COUNT], write error [$RESULT]"
-      echo 0
-      return -3
-    else
-      echo $FAIL_COUNT
-      return 0
-    fi
+  else
+    log_error "Failed to read fail count [$FAIL_COUNT], read error [$RESULT]"
+    # Increment fail count from 0, i.e. set to 1
+    FAIL_COUNT=1
   fi
 
+  WROTE_FAIL_COUNT=$(number_set "$FAILLOG" "$FAIL_COUNT")
+  RESULT=$?
+  if (($RESULT != 0)); then
+    log_error "Failed to increment fail count [$FAIL_COUNT]/[$WROTE_FAIL_COUNT], write error [$RESULT]"
+    echo 0
+    return 3
+  else
+    echo $FAIL_COUNT
+    return 0
+  fi
 }
 
 # Reset fail count to 0
@@ -166,10 +184,9 @@ function fail_count_reset()
   RESULT=$?
   if (($RESULT != 0)); then
     log_error "Failed to reset fail count [$NEW_FAIL_COUNT], write error [$RESULT]"
-    echo 0
-    return -2
+    return 2
   else
-    echo 0
+    log_info "Reset fail count to 0"
     return 0
   fi
 }
@@ -189,13 +206,13 @@ function is_gateway_reachable
 {
   PING_TARGET="$1"
   PING_INTERFACE="$2"
-  PING_TIMEOUT=5
+  PING_TIMEOUT=2
   PING_COUNT=3
   PING_INTERVAL=1
 
   if [ -z "$PING_TARGET" ]; then
     log_error "Missing a ping target"
-    exit -1
+    exit 1
   fi
 
   if [ -n "$PING_INTERFACE" ]; then
@@ -213,7 +230,7 @@ function restart_interface
   TARGET_IF="$1"
   if [[ -z $TARGET_IF ]]; then
     log_error "Cannot restart interface, missing $TARGET_IF"
-    return -1
+    return 1
   else
     log_info "Restarting interface $TARGET_IF"
     IFDOWN_RESULT=$(/sbin/ifdown --force $TARGET_IF 2>&1)
@@ -240,16 +257,30 @@ if [ -z "$FAILLOG" ]; then
 fi
 
 if ! is_gateway_reachable "$GATEWAY"; then
-  log_info "Could not reach $GATEWAY, retrying"
-  sleep 1
-  log_info "retrying $GATEWAY"
+  log_info "Could not reach $GATEWAY, sleeping and retrying"
+  sleep $RETRY_DELAY_S
+  log_info "Retrying $GATEWAY"
   if ! is_gateway_reachable "$GATEWAY"; then
-    log_error "Could not reach $GATEWAY. Restarting interfaces [$INTERFACES]"
-    # Iterate all default interfaces, restart them
-    for INTF in $INTERFACES; do
-      restart_interface "$INTF"
-    done
+    log_error "Could not reach $GATEWAY."
+    FAIL_COUNT=$(fail_count_inc 1)
+    INC_RESULT=$?
+    # Check if we've exceeded the failure limit
+    if ((INC_RESULT == 0 && FAIL_COUNT > FAILURE_LIMIT)); then
+      log_error "Failure count $FAIL_COUNT exceeds limit $FAILURE_LIMIT, restarting interfaces [$INTERFACES]"
+      # Iterate all default interfaces, restart them
+      for INTF in $INTERFACES; do
+        restart_interface "$INTF"
+      done
+      # Reset failure counter regardless of result of network restart
+      fail_count_reset
+    else
+      log_error "Failure count $FAIL_COUNT doesn't exceed limit $FAILURE_LIMIT (increment result $INC_RESULT), waiting"
+    fi
+  else
+    log_info "Network interfaces [$INTERFACES] operational."
+    fail_count_reset
   fi
 else
   log_info "Network interfaces [$INTERFACES] operational."
+  fail_count_reset
 fi
