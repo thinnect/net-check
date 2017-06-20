@@ -1,5 +1,5 @@
 Package: net-check
-Version: 0.1-1
+Version: 0.2-1
 Architecture: all
 Section: net
 Maintainer: Raido Pahtma <raido.pahtma@ttu.ee>
@@ -11,4 +11,4 @@ Description: Network connectivity checking and recovery script
  tries to repair the connection if it fails.
  .
  Change the interface and target in /etc/net-check.conf
-Installed-Size: 3
+Installed-Size: 21
