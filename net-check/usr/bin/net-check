@@ -220,7 +220,7 @@ function restart_interface
     log_error "ifdown of $TARGET_IF returned: $? [$IFDOWN_RESULT]"
     sleep 5
     IFUP_RESULT=$(/sbin/ifup --force $TARGET_IF 2>&1)
-    log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]")
+    log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]"
   fi
 }
 
