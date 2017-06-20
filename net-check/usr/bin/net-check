@@ -112,7 +112,7 @@ function number_set()
     log_error "Write failed: [$NUMBER] to [$STORAGE]"
     return 3
   else
-    log_info "Wrote [$NUMBER] to [$STORAGE]"
+    #log_info "Wrote [$NUMBER] to [$STORAGE]"
     echo $NUMBER
     return 0
   fi
@@ -142,7 +142,7 @@ function number_get()
     log_error "Read failed, non-numeric [$NUMBER] from [$STORAGE]"
     return 4
   else
-    log_info "Read [$NUMBER] from [$STORAGE]"
+    #log_info "Read [$NUMBER] from [$STORAGE]"
     echo $NUMBER
     return 0
   fi
@@ -206,7 +206,7 @@ function fail_count_reset()
     log_error "Failed to reset fail count [$NEW_FAIL_COUNT], write error [$RESULT]"
     return 2
   else
-    log_info "Reset fail count to 0"
+    #log_info "Reset fail count to 0"
     return 0
   fi
 }
@@ -241,7 +241,9 @@ function is_gateway_reachable
     PING_OUTPUT=$($BIN_PING -q -W $PING_TIMEOUT -c $PING_COUNT -i $PING_INTERVAL "$PING_TARGET" 2>&1)
   fi
   PING_RESULT=$?
-  log_info "Ping result $PING_RESULT: [$PING_OUTPUT]"
+  if ((PING_RESULT != 0)); then
+    log_info "Ping result $PING_RESULT: [$PING_OUTPUT]"
+  fi
   return $PING_RESULT
 }
 
