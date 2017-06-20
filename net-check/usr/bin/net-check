@@ -216,11 +216,11 @@ function restart_interface
     return -1
   else
     log_info "Restarting interface $TARGET_IF"
-    /sbin/ifdown --force $TARGET_IF
-    log_error "ifdown of $TARGET_IF returned: $?"
+    IFDOWN_RESULT=$(/sbin/ifdown --force $TARGET_IF 2>&1)
+    log_error "ifdown of $TARGET_IF returned: $? [$IFDOWN_RESULT]"
     sleep 5
-    /sbin/ifup --force $TARGET_IF
-    log_error "ifup of $TARGET_IF returned: $?"
+    IFUP_RESULT=$(/sbin/ifup --force $TARGET_IF 2>&1)
+    log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]")
   fi
 }
 
@@ -244,12 +244,12 @@ if ! is_gateway_reachable "$GATEWAY"; then
   sleep 1
   log_info "retrying $GATEWAY"
   if ! is_gateway_reachable "$GATEWAY"; then
-    log_error "Could not reach $GATEWAY. Restarting interfaces $INTERFACES"
+    log_error "Could not reach $GATEWAY. Restarting interfaces [$INTERFACES]"
     # Iterate all default interfaces, restart them
     for INTF in $INTERFACES; do
       restart_interface "$INTF"
     done
   fi
 else
-  log_info "Network interface $INTERFACES operational."
+  log_info "Network interfaces [$INTERFACES] operational."
 fi
