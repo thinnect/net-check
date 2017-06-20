@@ -29,15 +29,43 @@ SCRIPT_NAME=`basename $0`
 BIN_LOGGER="/usr/bin/logger"
 BIN_PING="/bin/ping"
 BIN_IP="/sbin/ip"
-# If ping fails _more_ times than the set limit, we restart the network.
-# When set to 5, the 6th consecutive failure will trigger a network restart.
-FAILURE_LIMIT=5
 # Delay between quick ping retry attempts
 RETRY_DELAY_S=10
 # Delay between issuing stop and start of an interface.
 # Must be long enough to accommodate 3G shutdown (15+ s)
 IF_RESTART_DELAY_S=20
 
+# Discover a list of default IPv4 interfaces on the system (often there are only 1)
+function list_default_interfaces()
+{
+  IFLIST=$($BIN_IP -family inet route show to default | sed -r 's/.*[[:space:]]+dev[[:space:]]+([^[:space:]]*)[[:space:]]+.*/\1/')
+  RESULT=$?
+  if ((RESULT==0)); then
+    echo $IFLIST
+  fi
+  return $RESULT
+}
+
+# Ping www.google.com if nothing else is specified
+if [ -z "$GATEWAY" ]; then
+  GATEWAY="www.google.com"
+fi
+
+# Default location for storing failure count between executions
+if [ -z "$FAILLOG" ]; then
+  FAILLOG="/var/tmp/net-check-faillog.txt"
+fi
+
+# If ping fails _more_ times than the set limit, we restart the network.
+# When set to 5, the 6th consecutive failure will trigger a network restart.
+if [ -z "$FAILURE_LIMIT" ]; then
+  FAILURE_LIMIT=5
+fi
+
+# Default to querying the current default interfaces from routing table
+if [ -z "$INTERFACES" ]; then
+  INTERFACES=$(list_default_interfaces)
+fi
 
 #######################################################################
 #                              Functions                              #
@@ -53,17 +81,6 @@ function log_info()
 {
   LOG_MSG="$1"
   $BIN_LOGGER -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
-}
-
-# Discover a list of default IPv4 interfaces on the system (often there are only 1)
-function list_default_interfaces()
-{
-  IFLIST=$($BIN_IP -family inet route show to default | sed -r 's/.*[[:space:]]+dev[[:space:]]+([^[:space:]]*)[[:space:]]+.*/\1/')
-  RESULT=$?
-  if ((RESULT==0)); then
-    echo $IFLIST
-  fi
-  return $RESULT
 }
 
 # Write a number to a file
@@ -243,21 +260,6 @@ function restart_interface
     log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]"
   fi
 }
-
-# Default to querying the current default interfaces from routing table
-if [ -z "$INTERFACES" ]; then
-  INTERFACES=$(list_default_interfaces)
-fi
-
-# Ping www.google.com if nothing else is specified
-if [ -z "$GATEWAY" ]; then
-  GATEWAY="www.google.com"
-fi
-
-# Store failure count in default location
-if [ -z "$FAILLOG" ]; then
-  FAILLOG="/var/tmp/net-check-faillog.txt"
-fi
 
 if ! is_gateway_reachable "$GATEWAY"; then
   log_info "Could not reach $GATEWAY, sleeping $RETRY_DELAY_S s and retrying"
