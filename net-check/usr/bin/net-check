@@ -22,8 +22,13 @@
 #                            Configuration                            #
 #######################################################################
 
+CONFIG_FILE="/etc/net-check.conf"
 # Load configuration file
-source /etc/net-check.conf
+if [ -f "$CONFIG_FILE" ]; then
+  source "$CONFIG_FILE"
+else
+  echo "Missing config file $CONFIG_FILE"
+fi
 
 SCRIPT_NAME=`basename $0`
 BIN_LOGGER="/usr/bin/logger"
@@ -74,13 +79,15 @@ fi
 function log_error()
 {
   LOG_MSG="$1"
-  $BIN_LOGGER -s -p cron.error -t $SCRIPT_NAME -i "$LOG_MSG"
+  MY_PPID=$$
+  $BIN_LOGGER --id=$MY_PPID -s -p cron.error -t $SCRIPT_NAME -i "$LOG_MSG"
 }
 
 function log_info()
 {
   LOG_MSG="$1"
-  $BIN_LOGGER -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
+  MY_PPID=$$
+  $BIN_LOGGER --id=$MY_PPID -s -p cron.info -t $SCRIPT_NAME -i "$LOG_MSG"
 }
 
 # Write a number to a file
@@ -222,6 +229,7 @@ function test_link()
   fi
 }
 
+# Test whether the given host is reachable
 function is_gateway_reachable
 {
   PING_TARGET="$1"
@@ -247,6 +255,28 @@ function is_gateway_reachable
   return $PING_RESULT
 }
 
+function cleanup_ppp0
+{
+  log_info "Killing all pppd instances"
+  pkill pppd
+  sleep 1
+}
+
+# Perform cleanup for given interface
+function cleanup_interface
+{
+  TARGET_IF="$1"
+  # Check if
+  TYPE_CHECK=$(type -t "cleanup_${TARGET_IF}")
+  if [[ -n "$TYPE_CHECK" && "$TYPE_CHECK" == "function" ]]; then
+    log_info "Doing cleanup using cleanup_${TARGET_IF}"
+    cleanup_${TARGET_IF}
+  else
+    log_info "No cleanup_${TARGET_IF} exists, skipping"
+  fi
+}
+
+# Restart the given interface
 function restart_interface
 {
   TARGET_IF="$1"
@@ -258,10 +288,17 @@ function restart_interface
     IFDOWN_RESULT=$(/sbin/ifdown --force $TARGET_IF 2>&1)
     log_error "ifdown of $TARGET_IF returned: $? [$IFDOWN_RESULT]"
     sleep $IF_RESTART_DELAY_S
+    # Perform additional cleanup for this interface
+    cleanup_interface "$TARGET_IF"
+
     IFUP_RESULT=$(/sbin/ifup --force $TARGET_IF 2>&1)
     log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]"
   fi
 }
+
+#######################################################################
+#                                 Main                                #
+#######################################################################
 
 if ! is_gateway_reachable "$GATEWAY"; then
   log_info "Could not reach $GATEWAY, sleeping $RETRY_DELAY_S s and retrying"
