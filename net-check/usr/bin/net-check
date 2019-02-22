@@ -35,7 +35,7 @@ BIN_LOGGER="/usr/bin/logger"
 BIN_PING="/bin/ping"
 BIN_IP="/sbin/ip"
 # Delay between quick ping retry attempts
-RETRY_DELAY_S=10
+RETRY_DELAY_S=5
 # Delay between issuing stop and start of an interface.
 IF_RESTART_DELAY_S=1
 
@@ -259,7 +259,7 @@ function cleanup_ppp0
   log_info "cleanup_ppp0: stop ofono"
   systemctl stop ofono
   # Wait for network de-registration
-  sleep 3
+  sleep 10
   # Begin reset of GSM module
   log_info "cleanup_ppp0: begin GSM reset"
   echo low > /sys/class/gpio/gpio115/direction
@@ -298,6 +298,9 @@ function restart_ppp0
   log_info "restart_ppp0: cleanup done"
   sleep 10
   /usr/bin/connmanctl technologies
+  log_info "restart_ppp0: restart ofono again"
+  systemctl restart ofono
+  sleep 10
   log_info "restart_ppp0: enable cellular"
   CONNMAN_UP_RESULT=$(/usr/bin/connmanctl enable cellular 2>&1)
   log_error "connmanctl enable returned: $? [$CONNMAN_UP_RESULT]"
