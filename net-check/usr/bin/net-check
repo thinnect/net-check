@@ -37,8 +37,7 @@ BIN_IP="/sbin/ip"
 # Delay between quick ping retry attempts
 RETRY_DELAY_S=10
 # Delay between issuing stop and start of an interface.
-# Must be long enough to accommodate 3G shutdown (15+ s)
-IF_RESTART_DELAY_S=20
+IF_RESTART_DELAY_S=1
 
 # Discover a list of default IPv4 interfaces on the system (often there are only 1)
 function list_default_interfaces()
@@ -53,7 +52,7 @@ function list_default_interfaces()
 
 # Ping www.google.com if nothing else is specified
 if [ -z "$GATEWAY" ]; then
-  GATEWAY="www.google.com"
+  GATEWAY="cloudflare.com"
 fi
 
 # Default location for storing failure count between executions
@@ -257,23 +256,68 @@ function is_gateway_reachable
 
 function cleanup_ppp0
 {
-  log_info "Killing all pppd instances"
-  pkill pppd
-  sleep 10
+  log_info "cleanup_ppp0: stop ofono"
+  systemctl stop ofono
+  # Wait for network de-registration
+  sleep 3
+  # Begin reset of GSM module
+  log_info "cleanup_ppp0: begin GSM reset"
+  echo low > /sys/class/gpio/gpio115/direction
+  sleep 1
+  # Toggle output power for the USB2 host controller
+  log_info "cleanup_ppp0: reset USB"
+  /usr/local/pug/cycleusb2.sh
+  sleep 1
+  # End reset of GSM module
+  echo high > /sys/class/gpio/gpio115/direction
+  log_info "cleanup_ppp0: end GSM reset"
+  # Wait for USB devices to show up
+  sleep 5
+  log_info "cleanup_ppp0: start ofono"
+  systemctl start ofono
 }
 
-# Perform cleanup for given interface
-function cleanup_interface
+function cleanup_eth1
 {
-  TARGET_IF="$1"
-  # Check if
-  TYPE_CHECK=$(type -t "cleanup_${TARGET_IF}")
-  if [[ -n "$TYPE_CHECK" && "$TYPE_CHECK" == "function" ]]; then
-    log_info "Doing cleanup using cleanup_${TARGET_IF}"
-    cleanup_${TARGET_IF}
-  else
-    log_info "No cleanup_${TARGET_IF} exists, skipping"
-  fi
+  log_info "cleanup_eth1: resetting USB"
+  # Toggle output power for the USB1 host controller
+  /usr/local/pug/cycleusb1.sh
+  log_info "cleanup_eth1: sleeping"
+  sleep 5
+}
+
+function restart_ppp0
+{
+  log_info "restart_ppp0: disable cellular"
+  CONNMAN_DOWN_RESULT=$(/usr/bin/connmanctl disable cellular 2>&1)
+  log_error "restart_ppp0: connmanctl disable returned: $? [$CONNMAN_DOWN_RESULT]"
+  sleep $IF_RESTART_DELAY_S
+  # Perform additional cleanup for this interface
+  log_info "restart_ppp0: cleanup"
+  cleanup_ppp0
+  log_info "restart_ppp0: cleanup done"
+  sleep 10
+  /usr/bin/connmanctl technologies
+  log_info "restart_ppp0: enable cellular"
+  CONNMAN_UP_RESULT=$(/usr/bin/connmanctl enable cellular 2>&1)
+  log_error "connmanctl enable returned: $? [$CONNMAN_UP_RESULT]"
+}
+
+function restart_eth1
+{
+  log_info "restart_eth1: disable ethernet"
+  CONNMAN_DOWN_RESULT=$(/usr/bin/connmanctl disable ethernet 2>&1)
+  log_error "restart_eth1: connmanctl disable returned: $? [$CONNMAN_DOWN_RESULT]"
+  sleep $IF_RESTART_DELAY_S
+  # Perform additional cleanup for this interface
+  log_info "restart_eth1: cleanup"
+  cleanup_eth1
+  log_info "restart_eth1: cleanup done"
+  sleep 3
+  /usr/bin/connmanctl technologies
+  log_info "restart_eth1: enable ethernet"
+  CONNMAN_UP_RESULT=$(/usr/bin/connmanctl enable ethernet 2>&1)
+  log_error "restart_eth1: connmanctl enable returned: $? [$CONNMAN_UP_RESULT]"
 }
 
 # Restart the given interface
@@ -284,15 +328,18 @@ function restart_interface
     log_error "Cannot restart interface, missing $TARGET_IF"
     return 1
   else
+    TARGET_IF="$1"
     log_info "Restarting interface $TARGET_IF"
-    IFDOWN_RESULT=$(/sbin/ifdown --force $TARGET_IF 2>&1)
-    log_error "ifdown of $TARGET_IF returned: $? [$IFDOWN_RESULT]"
-    sleep $IF_RESTART_DELAY_S
-    # Perform additional cleanup for this interface
-    cleanup_interface "$TARGET_IF"
-
-    IFUP_RESULT=$(/sbin/ifup --force $TARGET_IF 2>&1)
-    log_error "ifup of $TARGET_IF returned: $? [$IFUP_RESULT]"
+    # Execute a function named restart_${TARGET_IF} if it exists.
+    TYPE_CHECK=$(type -t "restart_${TARGET_IF}")
+    if [[ -n "$TYPE_CHECK" && "$TYPE_CHECK" == "function" ]]; then
+      log_info "Doing restart using restart_${TARGET_IF}"
+      restart_${TARGET_IF}
+      return $?
+    else
+      log_error "No restart_${TARGET_IF} exists, skipping ${TARGET_IF}"
+      return 2
+    fi
   fi
 }
 
@@ -315,7 +362,9 @@ if ! is_gateway_reachable "$GATEWAY"; then
       for INTF in $INTERFACES; do
         restart_interface "$INTF"
       done
-      # Reset failure counter regardless of result of network restart
+      sleep 1
+      # Clear failure counter regardless of result of network restart to
+      # ensure we don't start thrashing every time this script gets called
       fail_count_reset
     else
       log_error "Failure count $FAIL_COUNT doesn't exceed limit $FAILURE_LIMIT, incrementing ($INC_RESULT) and waiting"
