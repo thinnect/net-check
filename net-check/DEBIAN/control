@@ -4,7 +4,7 @@ Architecture: all
 Section: net
 Maintainer: Raido Pahtma <raido.pahtma@ttu.ee>
 Homepage: https://github.com/proactivity-lab/net-check
-Depends: bash connman
+Depends: bash, connman
 Priority: optional
 Description: Network connectivity checking and recovery script
  This script periodically checks network connectivity and
