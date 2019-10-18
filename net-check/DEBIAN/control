@@ -1,9 +1,9 @@
 Package: net-check
-Version: 0.4-1
+Version: 0.5-1
 Architecture: all
 Section: net
 Maintainer: Raido Pahtma <raido.pahtma@ttu.ee>
-Homepage: https://github.com/proactivity-lab/net-check
+Homepage: https://github.com/thinnect/net-check
 Depends: bash, connman
 Priority: optional
 Description: Network connectivity checking and recovery script
