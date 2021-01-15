@@ -30,7 +30,7 @@ else
   echo "Missing config file $CONFIG_FILE"
 fi
 
-VERSION="0.5"
+VERSION="0.6"
 SCRIPT_NAME=`basename $0`
 BIN_LOGGER="/usr/bin/logger"
 BIN_PING="/bin/ping"
@@ -283,8 +283,18 @@ function cleanup_eth1
   log_info "cleanup_eth1: resetting USB"
   # Toggle output power for the USB1 host controller
   /usr/local/pug/cycleusb1.sh
+
   log_info "cleanup_eth1: sleeping"
   sleep 5
+
+  /sbin/ifconfig -a eth1
+  IFCONFIG_STATUS_RESULT=$?
+  if ((IFCONFIG_STATUS_RESULT != 0)); then
+      log_info "eth1 cleanup failed"
+      return
+  fi
+
+  log_info "eth1 detected"
 }
 
 function restart_ppp0
@@ -305,6 +315,11 @@ function restart_ppp0
   log_info "restart_ppp0: enable cellular"
   CONNMAN_UP_RESULT=$(/usr/bin/connmanctl enable cellular 2>&1)
   log_error "connmanctl enable returned: $? [$CONNMAN_UP_RESULT]"
+}
+
+function restart_wwan0
+{
+  restart_ppp0
 }
 
 function restart_eth1

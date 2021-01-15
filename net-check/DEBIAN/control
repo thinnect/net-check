@@ -1,14 +1,17 @@
-Package: net-check
-Version: 0.5-1
+Package: net-check-pug
+Version: 0.6-1
 Architecture: all
 Section: net
-Maintainer: Raido Pahtma <raido.pahtma@ttu.ee>
+Maintainer: Raido Pahtma <raido@thinnect.com>
 Homepage: https://github.com/thinnect/net-check
 Depends: bash, connman
+Provides: net-check
+Conflicts: net-check
+Replaces: net-check
 Priority: optional
 Description: Network connectivity checking and recovery script
  This script periodically checks network connectivity and
  tries to repair the connection if it fails.
  .
  Change the interface and target in /etc/net-check.conf
-Installed-Size: 21
+Installed-Size: 36
